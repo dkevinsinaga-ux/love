@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>❤️</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; background: #060208; overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: Arial, "Noto Sans", sans-serif;
+  }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #start {
+    position: fixed; inset: 0; z-index: 5; background: #060208;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #ff4d6d; text-align: center; cursor: pointer; transition: opacity .7s;
+  }
+  #start .big { font-size: 64px; line-height: 1; animation: beat 1.2s ease-in-out infinite; }
+  #start .txt { margin-top: 18px; font-size: 18px; letter-spacing: .5px; opacity: .9; }
+  #start.hide { opacity: 0; pointer-events: none; }
+  @keyframes beat { 0%,100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+  #mute {
+    position: fixed; z-index: 6; right: 12px; top: max(12px, env(safe-area-inset-top));
+    width: 42px; height: 42px; border: 0; border-radius: 50%;
+    background: rgba(255,255,255,.10); color: #fff; font-size: 20px; cursor: pointer;
+    display: none; align-items: center; justify-content: center;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="start"></div>
+<button id="mute" aria-label="Suara">🔊</button>
+
+<audio id="bgm" src="lagu.mp3" loop preload="auto"></audio>
+
+<script>
+(function () {
+  // ===== Pengaturan (sama seperti love.py) =====
+  var SIZES = [9, 10, 11, 12];
+  var GAP = 7;
+  var DURATION = 10000;   // ms: lama semua tulisan muncul
+  var ANIM = 700;         // ms: lama satu tulisan melayang masuk
+  var LIFT = 34;
+  var FONT = "Arial, 'Noto Sans', 'Segoe UI', sans-serif";
+  var BG = "#060208";
+  var BGC = [6 / 255, 2 / 255, 8 / 255];
+  var FLASH = [1.0, 0.78, 0.78];
+
+  var PHRASES = [
+    "I love you", "Seni seviyorum", "Te amo", "Je t'aime",
+    "Ich liebe dich", "Ti amo", "Eu te amo", "Я тебя люблю",
+    "사랑해", "愛してる", "我爱你", "मैं तुमसे प्यार करता हूँ",
+    "Σ' αγαπώ", "Ik hou van jou", "Jag älskar dig", "Kocham cię",
+    "ฉันรักเธอ", "Anh yêu em", "Aku cinta kamu", "Я тебе кохаю"
+  ];
+
+  // ===== Elemen =====
+  var cv = document.getElementById("c");
+  var ctx = cv.getContext("2d");
+  var layer = document.createElement("canvas");
+  var lctx = layer.getContext("2d");
+  var startEl = document.getElementById("start");
+  var muteBtn = document.getElementById("mute");
+  var bgm = document.getElementById("bgm");
+
+  var W = 0, H = 0, dpr = 1, SC = 20, CY = 0, YMAX = 0, YMIN = 0;
+  var items = [], doneIdx = 0, started = false, finished = false, startT = 0;
+  var shimmers = [], lastShimmer = 0;
+
+  // ===== Random (seed tetap supaya hasilnya konsisten) =====
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  var rnd = mulberry32(11);
+  function uni(a, b) { return a + (b - a) * rnd(); }
+  function pick(arr) { return arr[Math.floor(rnd() * arr.length)]; }
+
+  // ===== Util warna =====
+  function clamp(v) { return Math.max(0, Math.min(1, v)); }
+  function mix(a, b, k) { return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]; }
+  function dim(c, k) { return [c[0] * k, c[1] * k, c[2] * k]; }
+  function rgb(c) {
+    return "rgb(" + Math.round(clamp(c[0]) * 255) + "," + Math.round(clamp(c[1]) * 255) + "," + Math.round(clamp(c[2]) * 255) + ")";
+  }
+
+  // ===== Bentuk hati =====
+  function heartUnit(a) {
+    return [
+      16 * Math.pow(Math.sin(a), 3),
+      13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)
+    ];
+  }
+
+  var POLY = [], EDGES = [];
+  function buildPoly() {
+    POLY = [];
+    for (var i = 0; i < 720; i++) {
+      var u = heartUnit(2 * Math.PI * i / 720);
+      POLY.push([u[0] * SC, u[1] * SC + SC]);
+    }
+    EDGES = [];
+    YMAX = -1e9; YMIN = 1e9;
+    for (var j = 0; j < POLY.length; j++) {
+      EDGES.push([POLY[j], POLY[(j + 1) % POLY.length]]);
+      if (POLY[j][1] > YMAX) YMAX = POLY[j][1];
+      if (POLY[j][1] < YMIN) YMIN = POLY[j][1];
+    }
+    CY = (YMAX + YMIN) / 2;
+  }
+
+  function spans(y) {
+    var xs = [];
+    for (var i = 0; i < EDGES.length; i++) {
+      var x1 = EDGES[i][0][0], y1 = EDGES[i][0][1], x2 = EDGES[i][1][0], y2 = EDGES[i][1][1];
+      if ((y1 <= y && y < y2) || (y2 <= y && y < y1)) {
+        xs.push(x1 + (y - y1) * (x2 - x1) / (y2 - y1));
+      }
+    }
+    xs.sort(function (a, b) { return a - b; });
+    var out = [];
+    for (var k = 0; k + 1 < xs.length; k += 2) out.push([xs[k], xs[k + 1]]);
+    return out;
+  }
+
+  function intersect(A, B) {
+    var out = [];
+    for (var i = 0; i < A.length; i++) for (var j = 0; j < B.length; j++) {
+      var lo = Math.max(A[i][0], B[j][0]), hi = Math.min(A[i][1], B[j][1]);
+      if (hi - lo > 10) out.push([lo, hi]);
+    }
+    return out;
+  }
+
+  // ===== Ukuran font & pengukuran teks =====
+  var fontScale = 1, measureCache = {};
+  function fontStr(size) { return "bold " + size + "px " + FONT; }
+  function measure(text, size) {
+    var key = size + "|" + text;
+    if (measureCache[key] == null) {
+      ctx.font = fontStr(size);
+      measureCache[key] = ctx.measureText(text).width;
+    }
+    return measureCache[key];
+  }
+
+  var cycleBag = [];
+  function nextPhrase() {
+    if (!cycleBag.length) {
+      cycleBag = PHRASES.slice();
+      for (var i = cycleBag.length - 1; i > 0; i--) {
+        var j = Math.floor(rnd() * (i + 1));
+        var t = cycleBag[i]; cycleBag[i] = cycleBag[j]; cycleBag[j] = t;
+      }
+    }
+    return cycleBag.pop();
+  }
+
+  function mathDist(x, y) {
+    return Math.hypot(x / (16 * SC), (y - CY) / (14.5 * SC));
+  }
+
+  // ===== Susun semua tulisan membentuk hati =====
+  function build() {
+    rnd = mulberry32(11);
+    cycleBag = [];
+    measureCache = {};
+    var sizes = SIZES.map(function (s) { return Math.round(s * fontScale * 10) / 10; });
+    var rowH = Math.max.apply(null, sizes) * 1.25 + 4;
+    var half = rowH / 2;
+    var placed = [];
+
+    for (var y = YMAX - half; y > YMIN + half; y -= rowH) {
+      var row = intersect(spans(y + half), spans(y - half));
+      for (var r = 0; r < row.length; r++) {
+        var lo = row[r][0] + 4, hi = row[r][1] - 4;
+        var cur = lo + uni(0, 8);
+        var line = [];
+        while (true) {
+          var fit = null;
+          for (var tries = 0; tries < 40; tries++) {
+            var text = nextPhrase();
+            var size = pick(sizes);
+            var w = measure(text, size);
+            if (cur + w <= hi) { fit = [text, size, w]; break; }
+          }
+          if (!fit) break;
+          line.push([cur + fit[2] / 2, fit[0], fit[1], fit[2]]);
+          cur += fit[2] + GAP;
+        }
+        if (!line.length) continue;
+        if (line.length > 1) {
+          var left = hi - (line[line.length - 1][0] + line[line.length - 1][3] / 2);
+          for (var i = 0; i < line.length; i++) line[i][0] += left * i / (line.length - 1);
+        } else {
+          line[0][0] = (lo + hi) / 2;
+        }
+        for (var q = 0; q < line.length; q++) {
+          placed.push({
+            px: line[q][0], py: y, text: line[q][1], size: line[q][2],
+            edge: q === 0 || q === line.length - 1
+          });
+        }
+      }
+    }
+
+    var wine = [0.58, 0.0, 0.09], crimson = [0.90, 0.05, 0.14], blood = [0.98, 0.10, 0.16];
+    placed.forEach(function (p) {
+      var rad = Math.min(1, mathDist(p.px, p.py));
+      var base = mix(wine, crimson, 0.25 + 0.75 * rad);
+      base = mix(base, blood, uni(0, 0.35) + (p.edge ? 0.3 : 0));
+      p.color = [Math.min(1, base[0]), Math.min(1, base[1]), Math.min(1, base[2])];
+      p.rad = rad;
+      // posisi di layar (hati dipusatkan)
+      p.x = W / 2 + p.px;
+      p.y = H / 2 - (p.py - CY);
+      p.dx = uni(-10, 10);
+      p.done = false;
+    });
+
+    var edges = placed.filter(function (p) { return p.edge; });
+    var inner = placed.filter(function (p) { return !p.edge; });
+    edges.sort(function (a, b) {
+      var A = Math.atan2(a.px, a.py - CY), B = Math.atan2(b.px, b.py - CY);
+      A = (A + 2 * Math.PI) % (2 * Math.PI); B = (B + 2 * Math.PI) % (2 * Math.PI);
+      return A - B;
+    });
+    inner.forEach(function (p) { p.key = -p.rad + uni(0, 0.08); });
+    inner.sort(function (a, b) { return a.key - b.key; });
+
+    items = edges.concat(inner);
+    items.forEach(function (p, i) { p.start = i / items.length * DURATION; });
+  }
+
+  // ===== Gambar satu tulisan =====
+  function drawText(g, text, size, x, y, color) {
+    g.font = fontStr(size);
+    g.fillStyle = rgb(color);
+    g.fillText(text, x, y);
+  }
+
+  function drawItem(g, p, u) {
+    var e = 1 - Math.pow(1 - u, 3);
+    var c = p.color;
+    var hover = (1 - e) * LIFT;
+    var x = u >= 1 ? p.x : p.x + p.dx * (1 - e);
+    var y = u >= 1 ? p.y : p.y - hover;
+
+    drawText(g, p.text, p.size, p.x + 2, p.y + 3, mix(BGC, dim(c, 0.30), e));
+    drawText(g, p.text, p.size + 1, x, y, mix(BGC, dim(c, 0.20), e * e));
+    if (u >= 1) {
+      drawText(g, p.text, p.size, x, y, c);
+    } else {
+      var flash = 0.75 * Math.sin(Math.PI * clamp((u - 0.55) / 0.45));
+      drawText(g, p.text, p.size, x, y, mix(mix(BGC, c, Math.pow(e, 1.5)), FLASH, flash));
+    }
+  }
+
+  function setupCtx(g) {
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+  }
+
+  function paintBackground(g) {
+    g.fillStyle = BG;
+    g.fillRect(0, 0, W, H);
+  }
+
+  // ===== Siapkan ukuran layar & susun ulang =====
+  function layout() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    layer.width = cv.width; layer.height = cv.height;
+    setupCtx(ctx); setupCtx(lctx);
+
+    // skala hati supaya muat di layar (HP maupun laptop)
+    var heightUnits = 0, ymax = -1e9, ymin = 1e9;
+    for (var i = 0; i < 720; i++) {
+      var u = heartUnit(2 * Math.PI * i / 720);
+      if (u[1] > ymax) ymax = u[1];
+      if (u[1] < ymin) ymin = u[1];
+    }
+    heightUnits = ymax - ymin;
+    SC = Math.min(W * 0.94 / 32, H * 0.80 / heightUnits, 26);
+    fontScale = Math.max(1, SC / 16);
+
+    buildPoly();
+    build();
+
+    paintBackground(lctx);
+    doneIdx = 0;
+    shimmers = [];
+  }
+
+  function finishAllInstantly() {
+    paintBackground(lctx);
+    items.forEach(function (p) { drawItem(lctx, p, 1); p.done = true; });
+    doneIdx = items.length;
+    finished = true;
+  }
+
+  // ===== Loop animasi =====
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (!started) return;
+    var t = now - startT;
+
+    paintBackground(ctx);
+    ctx.drawImage(layer, 0, 0, W, H);
+
+    if (!finished) {
+      for (var i = doneIdx; i < items.length; i++) {
+        var p = items[i];
+        if (p.start > t) break;
+        var u = clamp((t - p.start) / ANIM);
+        if (u >= 1) {
+          if (!p.done) { drawItem(lctx, p, 1); p.done = true; }
+          if (i === doneIdx) doneIdx++;
+          drawItem(ctx, p, 1);
+        } else {
+          drawItem(ctx, p, u);
+        }
+      }
+      if (doneIdx >= items.length) finished = true;
+    } else {
+      // kilau acak setelah semua selesai
+      if (now - lastShimmer > 140 && items.length) {
+        lastShimmer = now;
+        shimmers.push({ p: pick(items), until: now + 260 });
+      }
+      shimmers = shimmers.filter(function (s) { return s.until > now; });
+      shimmers.forEach(function (s) {
+        drawText(ctx, s.p.text, s.p.size, s.p.x, s.p.y, mix(s.p.color, FLASH, 0.6));
+      });
+    }
+  }
+
+  // ===== Mulai (harus lewat tap supaya musik boleh bunyi di HP) =====
+  function start() {
+    if (started) return;
+    started = true;
+    startT = performance.now();
+    startEl.classList.add("hide");
+    muteBtn.style.display = "flex";
+    try {
+      var pr = bgm.play();
+      if (pr && pr.catch) pr.catch(function () { /* diblokir browser */ });
+    } catch (e) {}
+  }
+
+  startEl.addEventListener("click", start);
+  startEl.addEventListener("touchend", function (e) { e.preventDefault(); start(); }, { passive: false });
+
+  muteBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (bgm.paused) { bgm.play().catch(function () {}); muteBtn.textContent = "🔊"; }
+    else { bgm.pause(); muteBtn.textContent = "🔇"; }
+  });
+
+  // Putar layar / ubah ukuran: susun ulang, kalau sudah mulai langsung tampil utuh
+  var rt = 0;
+  window.addEventListener("resize", function () {
+    clearTimeout(rt);
+    rt = setTimeout(function () {
+      layout();
+      if (started) finishAllInstantly();
+    }, 200);
+  });
+
+  layout();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
